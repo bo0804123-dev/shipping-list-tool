@@ -177,7 +177,7 @@ button,
 
 .notice {
   position: fixed;
-  top: 14px;
+  bottom: 14px;
   right: 16px;
   z-index: 1000;
   width: min(520px, calc(100% - 32px));
