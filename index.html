@@ -1,0 +1,320 @@
+﻿<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>配送リスト ツール</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="toolbar">
+        <div>
+          <p class="eyebrow">Internal Shipping Desk</p>
+          <h1>発送リスト作成</h1>
+        </div>
+        <div class="actions">
+          <button id="sampleButton" type="button">サンプル読込</button>
+          <button id="csvButton" type="button">通常CSV</button>
+          <button id="clickpostButton" type="button" class="primary">クリックポストCSV</button>
+          <button id="sheetCsvButton" type="button">保存用CSV</button>
+          <button id="sheetSyncButton" type="button">Sheets同期</button>
+          <button id="baseFetchButton" type="button">BASE注文取得</button>
+          <button id="shopifyFetchButton" type="button">Shopify注文取得</button>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="集計">
+        <article>
+          <span>総注文</span>
+          <strong id="totalCount">0</strong>
+        </article>
+        <article>
+          <span>発送対象</span>
+          <strong id="shipCount">0</strong>
+        </article>
+        <article>
+          <span>重複候補</span>
+          <strong id="duplicateCount">0</strong>
+        </article>
+        <article>
+          <span>最終更新</span>
+          <strong id="updatedAt">未読込</strong>
+        </article>
+      </section>
+
+      <section id="noticeBar" class="notice" aria-live="polite">準備完了</section>
+
+      <section class="panel import-panel">
+        <div class="panel-head">
+          <div>
+            <h2>取引データ取り込み</h2>
+            <p>各サービスから出力したCSVを追加してください。列名は自動判定し、不足分は空欄で扱います。</p>
+          </div>
+          <label class="file-picker">
+            CSVを追加
+            <input id="fileInput" type="file" accept=".csv,text/csv" multiple />
+          </label>
+        </div>
+
+        <div class="source-grid">
+          <label>
+            サービス
+            <select id="sourceSelect">
+              <option value="auto">CSVから自動判定</option>
+              <option value="mercari">メルカリ</option>
+              <option value="yahoo">ヤフオク</option>
+              <option value="rakuma">ラクマ</option>
+              <option value="base">BASE</option>
+              <option value="shopify">Shopify</option>
+              <option value="giftmall">ギフトモール</option>
+              <option value="other">その他</option>
+            </select>
+          </label>
+          <label>
+            発送対象
+            <select id="targetStatus">
+              <option value="unshipped">未発送のみ</option>
+              <option value="all">全件</option>
+            </select>
+          </label>
+          <label>
+            締め時刻
+            <input id="cutoffTime" type="time" value="10:00" />
+          </label>
+          <label>
+            検索
+            <input id="searchInput" type="search" placeholder="注文番号、氏名、商品名、住所" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel paste-panel">
+        <div class="panel-head">
+          <div>
+            <h2>画面コピー取り込み</h2>
+            <p>CSVがない販路向けです。取引画面からコピーしたテキストを貼り付け、発送リストへ追加します。</p>
+          </div>
+          <button id="pasteImportButton" type="button" class="primary">貼り付け内容を追加</button>
+        </div>
+        <div class="paste-grid">
+          <label>
+            販売サイト
+            <select id="pasteSource">
+              <option value="メルカリ">メルカリ</option>
+              <option value="ヤフオク">ヤフオク</option>
+              <option value="ラクマ">ラクマ</option>
+              <option value="ギフトモール">ギフトモール</option>
+              <option value="その他">その他</option>
+            </select>
+          </label>
+          <label>
+            販売アカウント
+            <select id="sellerAccountSelect">
+              <option value="">未指定</option>
+              <option value="メルカリ T Threee">メルカリ T Threee</option>
+              <option value="メルカリ メルフレ">メルカリ メルフレ</option>
+              <option value="メルカリ 廃品">メルカリ 廃品</option>
+              <option value="ラクマ T Threee">ラクマ T Threee</option>
+              <option value="ラクマ TRY">ラクマ TRY</option>
+              <option value="ヤフオク ILT">ヤフオク ILT</option>
+              <option value="ヤフオク TRY">ヤフオク TRY</option>
+              <option value="BASE ilt">BASE ilt</option>
+              <option value="BASE iglight">BASE iglight</option>
+              <option value="Shopify">Shopify</option>
+            </select>
+          </label>
+          <label>
+            貼り付けテキスト
+            <textarea id="pasteText" rows="8" placeholder="例:
+商品名: ギフトセット A
+取引ID: M-1001
+購入者: 山田 太郎
+郵便番号: 100-0001
+住所: 東京都千代田区1-1
+配送方法: 宅急便
+備考: 午前中希望"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section class="panel product-panel">
+        <div class="panel-head">
+          <div>
+            <h2>商品マスタ</h2>
+            <p>CSVや画面コピーに商品名がない注文へ、登録済みの商品名をすばやく割り当てます。</p>
+          </div>
+          <button id="productAddButton" type="button" class="primary">登録して反映</button>
+        </div>
+        <div class="product-grid">
+          <label>
+            商品名
+            <input id="productNameInput" type="text" placeholder="例: ギフトセット A" />
+          </label>
+          <label>
+            SKU / 管理番号
+            <input id="productSkuInput" type="text" placeholder="任意" />
+          </label>
+          <label>
+            商品不明の注文に割り当て
+            <select id="assignProductSelect">
+              <option value="">商品を選択</option>
+            </select>
+          </label>
+        </div>
+        <div class="inline-actions">
+          <button id="assignProductButton" type="button">選択商品を商品不明の注文へ反映</button>
+        </div>
+        <div id="productMapList" class="product-map">登録済み商品はありません。</div>
+      </section>
+
+      <section class="panel sync-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Google Sheets同期</h2>
+            <p>Apps ScriptのWebアプリURLを設定すると、発送リストを販売データへ追記できます。</p>
+          </div>
+          <button id="syncUrlSaveButton" type="button" class="primary">URL保存</button>
+        </div>
+        <div class="source-grid">
+          <label>
+            Apps Script URL
+            <input id="syncUrlInput" type="url" placeholder="https://script.google.com/macros/s/..." />
+          </label>
+          <label>
+            同期モード
+            <select id="syncMode">
+              <option value="unshipped">発送対象のみ</option>
+              <option value="all">表示中すべて</option>
+            </select>
+          </label>
+          <label>
+            同期結果
+            <input id="syncStatus" type="text" readonly value="未設定" />
+          </label>
+        </div>
+        <div class="sync-actions">
+          <button id="todaySalesResetButton" type="button">今日の販売をリセット</button>
+          <button id="todaySalesRefreshButton" type="button">今日の販売を更新</button>
+        </div>
+      </section>
+
+      <section class="panel base-panel">
+        <div class="panel-head">
+          <div>
+            <h2>BASE連携</h2>
+            <p>Apps Script経由でBASEの未発送注文を取得し、発送リストへ追加します。</p>
+          </div>
+          <div class="actions">
+            <button id="baseAuthButton" type="button">BASE認証</button>
+            <button id="baseFetchPanelButton" type="button" class="primary">BASE注文取得</button>
+          </div>
+        </div>
+        <div class="source-grid">
+          <label>
+            BASEショップ
+            <select id="baseShopKey">
+              <option value="ilt">ilt.base.ec</option>
+              <option value="iglight">iglight.base.shop</option>
+            </select>
+          </label>
+          <label>
+            ショップURL
+            <input id="baseShopUrl" type="url" value="https://ilt.base.ec/" />
+          </label>
+          <label>
+            取得開始日
+            <input id="baseStartDate" type="date" />
+          </label>
+          <label>
+            取得結果
+            <input id="baseStatus" type="text" readonly value="未取得" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel shopify-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Shopify連携</h2>
+            <p>Apps Script経由でShopifyの未発送・支払い済み注文を取得し、発送リストへ追加します。</p>
+          </div>
+          <button id="shopifyFetchPanelButton" type="button" class="primary">Shopify注文取得</button>
+        </div>
+        <div class="source-grid">
+          <label>
+            ストアドメイン
+            <input id="shopifyStoreDomain" type="text" placeholder="example.myshopify.com" />
+          </label>
+          <label>
+            取得開始日
+            <input id="shopifyStartDate" type="date" />
+          </label>
+          <label>
+            取得結果
+            <input id="shopifyStatus" type="text" readonly value="未取得" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head compact">
+          <div>
+            <h2>発送リスト</h2>
+            <p id="fileList">CSV未読込</p>
+          </div>
+          <div class="actions">
+            <button id="clearButton" type="button">表示クリア</button>
+            <button id="syncResetButton" type="button">同期済み解除</button>
+            <button id="historyClearButton" type="button">保存履歴クリア</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>発送</th>
+                <th>サービス</th>
+                <th>販売アカウント</th>
+                <th>注文番号</th>
+                <th>購入日</th>
+                <th>氏名</th>
+                <th>郵便番号</th>
+                <th>住所</th>
+                <th>商品</th>
+                <th>数量</th>
+                <th>配送</th>
+                <th>商品代金</th>
+                <th>利益</th>
+                <th>アカウント名</th>
+                <th>同期</th>
+                <th>備考</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="orderRows">
+              <tr>
+                <td colspan="17" class="empty">CSVを読み込むと発送リストが表示されます。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel checklist">
+        <h2>次に必要なもの</h2>
+        <p id="exportLog" class="log-line">CSV出力履歴はまだありません。</p>
+        <ul>
+          <li>メルカリ、ヤフオク、ラクマ、ギフトモールから出せるCSVサンプル各1件</li>
+          <li>発送リストに必ず入れたい列名</li>
+          <li>「発送対象」に含めるステータスのルール</li>
+          <li>BASEとShopifyをAPI連携する場合の管理者権限、APIキー発行可否</li>
+        </ul>
+      </section>
+    </main>
+
+    <script src="encoding.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
+
