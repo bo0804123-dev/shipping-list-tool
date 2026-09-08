@@ -1524,8 +1524,13 @@ function toFullWidthClickPostText(value) {
     .normalize("NFKC")
     .replace(/[\uFE00-\uFE0F\u200B-\u200D\uDB40-\uDBFF][\uDC00-\uDFFF]?/g, "")
     .replace(/[\uD800-\uDFFF]/g, "")
-    .replace(/[ -~]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0))
+    // 半角スペース(0x20)を対象に含めてはいけない。全角化は「+0xFEE0」で行うが、
+    // 0x20+0xFEE0 は U+FF00 という未定義文字になり（全角スペースは U+3000 で別物）、
+    // その結果 住所の区切りが「消える」か、Shift_JIS変換で「?」になっていた
+    // （例: 大阪府守口市?東光町?2-19-1?マツイビル）。0x21〜0x7E だけを全角化する。
+    .replace(/[!-~]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0))
     .replace(/　+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
