@@ -354,17 +354,23 @@ function parseYahooPastedBlock(lines) {
     .filter(Boolean);
   const joined = cleaned.join(" ");
 
-  const orderId = (joined.match(/オークションID[:：]\s*([A-Za-z0-9]+)/) || [])[1] || "";
+  const orderId = yahooLabeledValue(cleaned, /^オークションID/, /^([A-Za-z0-9]+)$/)
+    || (joined.match(/オークションID[:：]\s*([A-Za-z0-9]+)/) || [])[1] || "";
   const itemName = parseYahooItemName(cleaned);
   // 取引ページの段階によってラベルが「落札数量」「数量」のどちらにもなる。
-  const quantityMatch = joined.match(/(?:落札)?数量[:：]\s*([0-9,]+)/);
-  const quantity = quantityMatch ? quantityMatch[1].replace(/,/g, "") : "1";
-  const priceMatch = joined.match(/落札価格[:：]\s*([0-9,]+)\s*円/);
-  const price = priceMatch ? `¥${priceMatch[1]}` : "";
-  const endedAtMatch = joined.match(/終了日時[:：]\s*(\d{1,2}月\d{1,2}日\s*\d{1,2}時\d{1,2}分)/);
-  const orderedAt = endedAtMatch ? normalizeYahooDate(endedAtMatch[1]) : "";
-  const buyerMatch = joined.match(/落札者[:：]\s*([^\s（(]+)/);
-  const buyerName = buyerMatch ? buyerMatch[1].trim() : "";
+  // さらにコピーの仕方によって「落札数量：3」と1行になる場合と、「落札数量」の次の行に「3」が
+  // 来る場合がある。後者を拾えず数量が常に1になっていたため、両方の形式に対応する。
+  const quantity = (yahooLabeledValue(cleaned, /^(?:落札)?数量/, /^([0-9,]+)/)
+    || (joined.match(/(?:落札)?数量[:：]\s*([0-9,]+)/) || [])[1]
+    || "1").replace(/,/g, "");
+  const priceValue = yahooLabeledValue(cleaned, /^落札価格/, /^([0-9,]+)\s*円?/)
+    || (joined.match(/落札価格[:：]\s*([0-9,]+)\s*円/) || [])[1] || "";
+  const price = priceValue ? `¥${priceValue}` : "";
+  const endedAtValue = yahooLabeledValue(cleaned, /^終了日時/, /(\d{1,2}月\d{1,2}日\s*\d{1,2}時\d{1,2}分)/)
+    || (joined.match(/終了日時[:：]\s*(\d{1,2}月\d{1,2}日\s*\d{1,2}時\d{1,2}分)/) || [])[1] || "";
+  const orderedAt = endedAtValue ? normalizeYahooDate(endedAtValue) : "";
+  const buyerName = (yahooLabeledValue(cleaned, /^落札者/, /^([^\s（(]+)/)
+    || (joined.match(/落札者[:：]\s*([^\s（(]+)/) || [])[1] || "").trim();
   const shippingMethod = parseYahooShippingMethod(cleaned);
 
   // ヤフオクの匿名配送（おてがる配送等）は住所欄自体がコピー内容に含まれないため、
@@ -389,6 +395,29 @@ function parseYahooPastedBlock(lines) {
 
   const status = "未発送";
   return { orderId, itemName, orderedAt, buyerName, postalCode, address, shippingMethod, price, quantity, note, status };
+}
+
+// ヤフオク取引ナビのコピーは、環境によって「ラベル：値」が同じ行に入る場合と、
+// ラベル行の次の行に値だけが入る場合がある。全行を空白で連結して「ラベル[:：]」を探す方式だと
+// 後者をまったく拾えず、数量が既定値の1に、価格・ID・落札者・終了日時が空になっていた。
+// ラベル行を見つけたうえで「同じ行の続き」→「次の非空行」の順に値を探すことで両形式に対応する。
+function yahooLabeledValue(cleaned, labelPattern, valuePattern) {
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const line = cleaned[i];
+    if (!labelPattern.test(line)) continue;
+    const inline = line.replace(labelPattern, "").replace(/^[:：]\s*/, "").trim();
+    if (inline) {
+      const hit = inline.match(valuePattern);
+      if (hit) return hit[1] !== undefined ? hit[1] : hit[0];
+    }
+    for (let j = i + 1; j < cleaned.length; j += 1) {
+      const next = cleaned[j];
+      if (!next) continue;
+      const hit = next.match(valuePattern);
+      return hit ? (hit[1] !== undefined ? hit[1] : hit[0]) : "";
+    }
+  }
+  return "";
 }
 
 function parseYahooItemName(cleaned) {
@@ -1422,6 +1451,10 @@ function validateClickPostRows(rows) {
     if (!row.slice(3, 7).some(Boolean)) errors.push(`${rowNumber}行目 住所`);
     row.slice(3, 7).forEach((addressLine, lineIndex) => {
       if (clickPostLength(addressLine) > 20) errors.push(`${rowNumber}行目 住所${lineIndex + 1}`);
+      // 住所に「?」が混ざったまま出力すると配達できない住所になる。
+      // 取り込み元の文字化けや貼り付けミスが原因なので、黙って消さずに行番号を出して直してもらう
+      // （「１？２？３」を単純削除すると「１２３」になり、丁目・番地が壊れるため）。
+      if (/[?？]/.test(addressLine)) errors.push(`${rowNumber}行目 住所${lineIndex + 1}に「?」があります（住所を修正してください）`);
     });
     if (!row[7] || clickPostLength(row[7]) > 15) errors.push(`${rowNumber}行目 内容品`);
   });
