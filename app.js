@@ -216,6 +216,19 @@ function normalize(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// ヤフオクの取引画面は「数量」のラベル行に落札価格まで一緒にコピーされることがあり、
+// 「1 1,560円」のような値が数量として渡ってきていた。シート側は数字以外を取り除いて
+// 数値化するため、これが 11560 という巨大な数量になり、代金と混ざったように見えていた。
+// 先頭の数値だけを数量として採用し、常識的な範囲(1〜999)に収まらない値は 1 に戻す。
+function normalizeQuantityText(value) {
+  const text = String(value || "").normalize("NFKC").replace(/,/g, "");
+  const match = text.match(/\d+/);
+  if (!match) return "1";
+  const number = Number(match[0]);
+  if (!Number.isFinite(number) || number < 1 || number > 999) return "1";
+  return String(number);
+}
+
 function inferSource(fileName, rows) {
   const sample = `${fileName} ${rows.slice(0, 3).flat().join(" ")}`.toLowerCase();
   if (sample.includes("mercari") || sample.includes("メルカリ")) return "mercari";
@@ -336,7 +349,7 @@ function pastedBlockToOrder(block, index) {
     phone: get("電話番号"),
     itemName: get("商品名", "品名", "タイトル") || yahoo.itemName || rakuma.itemName || mercari.itemName,
     sku: get("SKU", "商品コード", "管理番号"),
-    quantity: get("数量", "個数") || yahoo.quantity || "1",
+    quantity: normalizeQuantityText(get("数量", "個数") || yahoo.quantity || "1"),
     shippingMethod: get("配送方法", "発送方法") || yahoo.shippingMethod || rakuma.shippingMethod || mercari.shippingMethod,
     price: yahoo.price || rakuma.price || mercari.price,
     profit: rakuma.profit || mercari.profit,
@@ -369,8 +382,12 @@ function parseYahooPastedBlock(lines) {
   const endedAtValue = yahooLabeledValue(cleaned, /^終了日時/, /(\d{1,2}月\d{1,2}日\s*\d{1,2}時\d{1,2}分)/)
     || (joined.match(/終了日時[:：]\s*(\d{1,2}月\d{1,2}日\s*\d{1,2}時\d{1,2}分)/) || [])[1] || "";
   const orderedAt = endedAtValue ? normalizeYahooDate(endedAtValue) : "";
-  const buyerName = (yahooLabeledValue(cleaned, /^落札者/, /^([^\s（(]+)/)
+  // 「落札者」で始まる行には、配送方法欄の見出し「落札者が選択した配送方法」もある。
+  // 単純に /^落札者/ で拾うと氏名が「が選択した配送方法」になってしまうため、
+  // ラベルとして成立する形（行が「落札者」だけ／「落札者：」／「落札者 」）に限定する。
+  const rawBuyerName = (yahooLabeledValue(cleaned, /^落札者(?:$|\s*[:：]|\s)/, /^([^\s（(]+)/)
     || (joined.match(/落札者[:：]\s*([^\s（(]+)/) || [])[1] || "").trim();
+  const buyerName = /配送方法|取引ナビ|商品ページ|使い方ガイド/.test(rawBuyerName) ? "" : rawBuyerName;
   const shippingMethod = parseYahooShippingMethod(cleaned);
 
   // ヤフオクの匿名配送（おてがる配送等）は住所欄自体がコピー内容に含まれないため、
@@ -433,6 +450,11 @@ function parseYahooItemName(cleaned) {
   return "";
 }
 
+// 配送方法の見出しの次に来る行を最大3行つなげているが、次の見出し行（「品名」など）で
+// 止めていなかったため、配送方法に「品名」が混ざり、さらにその値が氏名側へずれていた。
+// ヤフオク取引ナビで使われる見出し語だけの行に当たったら、そこで打ち切る。
+const YAHOO_LABEL_LINE_PATTERN = /^(?:品名|商品名|タイトル|数量|落札数量|落札価格|落札者|落札日時|終了日時|オークションID|支払方法|支払い方法|お支払い方法|送料|配送料|配送方法|発送方法|発送元|発送先|発送場所|お届け先|受付番号|パスワード|配送コード|取引メッセージ|商品情報|取引ナビ|使い方ガイド|商品ページ)[\s:：]*$/;
+
 function parseYahooShippingMethod(cleaned) {
   const labelIndex = cleaned.findIndex((line) => line === "落札者が選択した配送方法" || line === "配送方法");
   if (labelIndex < 0) return "";
@@ -440,6 +462,7 @@ function parseYahooShippingMethod(cleaned) {
   for (let i = labelIndex + 1; i < cleaned.length && parts.length < 3; i += 1) {
     const line = cleaned[i];
     if (!line) break;
+    if (YAHOO_LABEL_LINE_PATTERN.test(line)) break;
     if (line.length > 20 || /[。、]|変更する|発送場所|受付番号|パスワード|配送コード/.test(line)) break;
     parts.push(line);
   }
@@ -688,9 +711,18 @@ function parseRakumaPastedBlock(lines) {
 
   if (address === postalCode) address = addressInfo.address;
 
-  const status = cleaned.find((line) => /商品の発送と発送通知|発送通知を行ってください|購入手続が完了/.test(line)) || "未発送";
+  const status = parseRakumaStatus(cleaned);
   const note = deadline ? `発送期限 ${deadline}` : "";
   return { orderId, itemName, orderedAt, buyerName, postalCode, address, shippingMethod: shippingMethod || parseRakumaShippingMethod(cleaned), price, profit, accountName, status, note };
+}
+
+// ラクマの取引画面に出る「商品の発送と発送通知を行ってください」などの案内文を、
+// そのままステータス欄に入れていた。販売データのステータスは 未発送／発送完了 のような
+// 決まった値でないと集計もプルダウンも通らないため、案内文から状態を判定して変換する。
+function parseRakumaStatus(cleaned) {
+  const joined = cleaned.join(" ");
+  if (/発送通知が完了|発送通知済|発送済み|発送しました|受け取り評価をお待ち/.test(joined)) return "発送完了";
+  return "未発送";
 }
 
 function parseRakumaAddress(cleaned) {
