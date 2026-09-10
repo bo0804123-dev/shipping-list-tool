@@ -1485,7 +1485,9 @@ function validateClickPostRows(rows) {
     if (!/^(様|御中)$/.test(row[2])) errors.push(`${rowNumber}行目 敬称`);
     if (!row.slice(3, 7).some(Boolean)) errors.push(`${rowNumber}行目 住所`);
     row.slice(3, 7).forEach((addressLine, lineIndex) => {
-      if (clickPostLength(addressLine) > 20) errors.push(`${rowNumber}行目 住所${lineIndex + 1}`);
+      if (clickPostLength(addressLine) > 20) {
+        errors.push(`${rowNumber}行目 住所${lineIndex + 1}が1行20文字に収まりません（住所を短くするか建物名を省略してください）`);
+      }
       // 住所に「?」が混ざったまま出力すると配達できない住所になる。
       // 取り込み元の文字化けや貼り付けミスが原因なので、黙って消さずに行番号を出して直してもらう
       // （「１？２？３」を単純削除すると「１２３」になり、丁目・番地が壊れるため）。
@@ -1516,8 +1518,10 @@ function splitAddressForClickPost(value) {
   const first = match ? match[1] : "";
   const rest = match ? match[2] : compact;
   const chunks = chunkTextByClickPostLength(rest, 20);
-  const lines = [first, chunks[0] || "", chunks[1] || "", chunks.slice(2).join("")];
-  return lines.map((part) => truncateClickPostText(part, 20));
+  // 4行(1行20文字)に収まらない住所をここで切り捨てると、建物名や部屋番号が消えたまま
+  // CSVに出てしまい、しかも検証も通ってしまう（＝届かない荷物になる）。
+  // 切らずにそのまま返し、長すぎることは validateClickPostRows でエラーにして気づけるようにする。
+  return [first, chunks[0] || "", chunks[1] || "", chunks.slice(2).join("")];
 }
 
 function chunkTextByClickPostLength(text, maxLength) {
