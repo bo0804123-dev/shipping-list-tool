@@ -362,8 +362,11 @@ function pastedBlockToOrder(block, index) {
 }
 
 function parseYahooPastedBlock(lines) {
+  // 「**」は太字マークとして取り除くが、ヤフオクの落札者IDは「yam********（294）」のように
+  // アスタリスクで伏せ字になっている。以前は「**」を無条件に消していたため、
+  // 落札者名が「yam」まで削られていた。前後が対になっている「**◯◯**」だけを外す。
   const cleaned = lines
-    .map((line) => line.replace(/\*\*/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim())
+    .map((line) => line.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim())
     .filter(Boolean);
   const joined = cleaned.join(" ");
 
@@ -569,10 +572,10 @@ function saveExportLogs() {
 
 function parseMercariPastedBlock(lines) {
   const originalLines = lines
-    .map((line) => line.replace(/\*\*/g, "").trim())
+    .map((line) => line.replace(/\*\*([^*]+)\*\*/g, "$1").trim())
     .filter(Boolean);
   const cleaned = lines
-    .map((line) => line.replace(/\*\*/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim())
+    .map((line) => line.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim())
     .filter(Boolean);
   const valueAfter = (label) => {
     const index = cleaned.findIndex((line) => line === label);
@@ -682,7 +685,7 @@ function parseMercariAccountName(cleaned) {
 
 function parseRakumaPastedBlock(lines) {
   const cleaned = lines
-    .map((line) => line.replace(/\*\*/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim())
+    .map((line) => line.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim())
     .filter(Boolean);
   const joined = cleaned.join(" ");
   const valueAfter = (...labels) => {
