@@ -207,6 +207,13 @@ button,
   color: #166534;
 }
 
+.notice.warning {
+  border-color: #d8a33a;
+  border-left-color: #a85d13;
+  background: #fff6e3;
+  color: #7a4a08;
+}
+
 .notice.working {
   border-color: #6f8fc9;
   border-left-color: #345f9f;
@@ -357,7 +364,12 @@ tbody tr:hover {
   background: #fffaf0;
 }
 
-tbody tr.duplicate {
+/* 取引IDが重なっている行。文字が読める濃さの塗りつぶしにして、
+   印刷しても内容が見えるようにする。左端の線は塗りが弱く見えるときの保険。 */
+tbody tr.duplicate,
+tbody tr.duplicate.ship-target,
+tbody tr.duplicate:hover {
+  background: #ffd6cc;
   box-shadow: inset 3px 0 0 var(--warn);
 }
 
