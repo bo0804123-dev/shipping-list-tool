@@ -125,7 +125,15 @@ async function handleFiles(event) {
   }
   fileInput.value = "";
   render();
-  setNotice(`CSVから${importedCount}件を発送リストへ追加しました`, "success");
+  // CSVは1注文が複数行に分かれることがあるので、貼り付けのように自動で1行にまとめず、
+  // 重複候補として色を付けて知らせるだけにする（消すかどうかは目で見て判断する）。
+  const duplicateRows = Array.from(duplicateKeys().values())
+    .filter((count) => count > 1)
+    .reduce((sum, count) => sum + (count - 1), 0);
+  setNotice(
+    `CSVから${importedCount}件を発送リストへ追加しました`
+      + (duplicateRows ? `／取引IDが重なる行が${duplicateRows}件あります（色付きの行を確認してください）` : ""),
+    duplicateRows ? "warning" : "success");
 }
 
 async function readCsvText(file) {
@@ -256,25 +264,36 @@ function importPastedText() {
   setNotice("画面コピーを解析中です...", "working");
   const blocks = splitPastedBlocks(text, pasteSource.value);
   const imported = blocks.map((block, index) => pastedBlockToOrder(block, index));
-  imported.forEach(upsertOrder);
+  const mergedIds = [];
+  imported.forEach((order) => {
+    if (upsertOrder(order)) mergedIds.push(order.orderId);
+  });
   state.files.push(`${pasteSource.value}貼り付け`);
   pasteText.value = "";
   saveOrders();
   render();
-  setNotice(`${pasteSource.value}の画面コピーから${imported.length}件を発送リストへ追加しました`, "success");
+  const addedCount = imported.length - mergedIds.length;
+  setNotice(
+    `${pasteSource.value}の画面コピーから${addedCount}件を発送リストへ追加しました`
+      + (mergedIds.length ? `／取引ID ${mergedIds.join(" , ")} は既にあるため上書きせず1行にまとめました` : ""),
+    mergedIds.length ? "warning" : "success");
 }
 
+// 既に同じ取引がある場合は行を増やさず、空欄だけを埋める。
+// 戻り値 true = 既存の行に合流した（＝新しい行は増えていない）。
 function upsertOrder(nextOrder) {
-  const existing = state.orders.find((order) => order.source === nextOrder.source && order.orderId === nextOrder.orderId);
+  const nextKey = orderIdKey(nextOrder);
+  const existing = state.orders.find((order) => orderIdKey(order) === nextKey);
   if (!existing) {
     state.orders.push(nextOrder);
-    return;
+    return false;
   }
   Object.keys(nextOrder).forEach((key) => {
     if (key === "id") return;
     if (nextOrder[key] && !existing[key]) existing[key] = nextOrder[key];
   });
   existing.shipTarget = isShipTarget(existing.status);
+  return true;
 }
 
 function splitPastedBlocks(text, source) {
@@ -826,10 +845,24 @@ function filteredOrders() {
   });
 }
 
+// 同じ取引を貼り直す・同じCSVを二度読み込む、といった操作で同じ注文が2行になると、
+// そのままSheetsへ同期すると発送準備リストにも2件出て二重発送につながる。
+// 判定は取引IDだけで行う（商品名や氏名は取り込み方で表記が揺れるため、
+// 揺れたときに「別の注文」と見なされて重複を見逃すことがある）。
+function orderIdKey(order) {
+  const id = normalize(order.orderId);
+  // 取引IDが読み取れなかったときに付ける仮ID（末尾が13桁のタイムスタンプ）は
+  // 貼り付けるたびに変わるので、取引IDの代わりに中身で見比べる。
+  if (!id || /-\d{13}(-\d+)?$/.test(id)) {
+    return normalize(`${order.source}-${order.itemName}-${order.buyerName}-${order.orderedAt}`);
+  }
+  return id;
+}
+
 function duplicateKeys() {
   const seen = new Map();
   state.orders.forEach((order) => {
-    const key = normalize(`${order.source}-${order.orderId}-${order.itemName}-${order.buyerName}`);
+    const key = orderIdKey(order);
     seen.set(key, (seen.get(key) || 0) + 1);
   });
   return seen;
@@ -838,7 +871,10 @@ function duplicateKeys() {
 function render() {
   const rows = filteredOrders();
   const duplicates = duplicateKeys();
-  const duplicateCount = Array.from(duplicates.values()).filter((count) => count > 1).length;
+  // 「2行あるうちの余分な1行」を数える。3行あれば2件と数える。
+  const duplicateCount = Array.from(duplicates.values())
+    .filter((count) => count > 1)
+    .reduce((sum, count) => sum + (count - 1), 0);
   document.querySelector("#totalCount").textContent = state.orders.length;
   document.querySelector("#shipCount").textContent = state.orders.filter((order) => order.shipTarget).length;
   document.querySelector("#duplicateCount").textContent = duplicateCount;
@@ -857,8 +893,7 @@ function render() {
 
   tbody.innerHTML = rows
     .map((order) => {
-      const key = normalize(`${order.source}-${order.orderId}-${order.itemName}-${order.buyerName}`);
-      const duplicateClass = duplicates.get(key) > 1 ? " duplicate" : "";
+      const duplicateClass = duplicates.get(orderIdKey(order)) > 1 ? " duplicate" : "";
       return `
         <tr class="${order.shipTarget ? "ship-target" : ""}${duplicateClass}">
           <td><span class="badge">${order.shipTarget ? "対象" : "除外"}</span></td>
@@ -1050,8 +1085,15 @@ async function syncToGoogleSheets() {
       order.syncedAt = syncedAt;
     });
     saveOrders();
-    syncStatus.value = `${result.inserted}件を同期しました`;
-    setNotice(`${result.inserted}件をGoogle Sheetsへ同期しました`, "success");
+    const skippedIds = Array.isArray(result.skippedIds) ? result.skippedIds : [];
+    syncStatus.value = `${result.inserted}件を同期しました`
+      + (skippedIds.length ? `（重複${skippedIds.length}件は追加せず）` : "");
+    setNotice(
+      `${result.inserted}件をGoogle Sheetsへ同期しました`
+        + (skippedIds.length
+          ? `／取引IDが既に販売データにある${skippedIds.length}件は追加していません（${skippedIds.join(" , ")}）`
+          : ""),
+      skippedIds.length ? "warning" : "success");
     state.exportLogs.unshift({
       exportedAt: new Date().toLocaleString("ja-JP"),
       count: result.inserted,
@@ -1395,6 +1437,14 @@ function sheetArchiveHeaders() {
     "標準商品名5",
     "商品コード6",
     "標準商品名6",
+    "商品コード7",
+    "標準商品名7",
+    "商品コード8",
+    "標準商品名8",
+    "商品コード9",
+    "標準商品名9",
+    "商品コード10",
+    "標準商品名10",
     "送料",
     "販売手数料",
   ];
@@ -1439,6 +1489,14 @@ function sheetArchiveObjects(sourceOrders = filteredOrders()) {
     標準商品名5: "",
     商品コード6: "",
     標準商品名6: "",
+    商品コード7: "",
+    標準商品名7: "",
+    商品コード8: "",
+    標準商品名8: "",
+    商品コード9: "",
+    標準商品名9: "",
+    商品コード10: "",
+    標準商品名10: "",
     送料: "",
     販売手数料: "",
   }));
