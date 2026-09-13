@@ -1539,7 +1539,11 @@ function validateClickPostRows(rows) {
   rows.forEach((row, index) => {
     const rowNumber = index + 2;
     if (!/^\d{7}$|^\d{3}-\d{4}$/.test(row[0])) errors.push(`${rowNumber}行目 郵便番号`);
-    if (!row[1] || clickPostLength(row[1]) > 20) errors.push(`${rowNumber}行目 氏名`);
+    if (!row[1]) {
+      errors.push(`${rowNumber}行目 氏名が空です`);
+    } else if (clickPostLength(row[1]) > 20) {
+      errors.push(`${rowNumber}行目 氏名が20文字に収まりません（氏名を短くしてください）`);
+    }
     if (!/^(様|御中)$/.test(row[2])) errors.push(`${rowNumber}行目 敬称`);
     if (!row.slice(3, 7).some(Boolean)) errors.push(`${rowNumber}行目 住所`);
     row.slice(3, 7).forEach((addressLine, lineIndex) => {
@@ -1613,7 +1617,10 @@ function formatClickPostName(value) {
     .replace(/[?？]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  return truncateClickPostText(removeSjisUnsafeChars(name), 20);
+  // 20文字を超える氏名をここで切ると、宛名が途中で切れたラベルのまま出力され、
+  // しかも検証も通ってしまう（検証が見る値は切ったあとのものなので、必ず20文字以内になる）。
+  // 住所と同じく切らずに返し、長すぎることは validateClickPostRows でエラーにして気づけるようにする。
+  return removeSjisUnsafeChars(name);
 }
 
 function toFullWidthClickPostText(value) {
