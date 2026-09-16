@@ -57,15 +57,30 @@
   .notice b { color: #8a4b00; }
   .notice.error { background: #fbe7e3; border-bottom-color: #e2b4ac; color: #8c2a20; }
   .notice[hidden] { display: none; }
-
-  #list { padding: 4px 0 40px; }
-  /* 画面では横にはみ出す表をスクロールできるようにする（印刷時はA4に収まる）。 */
-  @media screen {
-    #list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .notice button {
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    margin-top: 8px;
+    padding: 11px 20px;
+    border-radius: 8px;
+    border: 1px solid #8a4b00;
+    background: #8a4b00;
+    color: #ffffff;
+    cursor: pointer;
   }
+
+  /* 表は常にA4の本文幅（210mm - 左右8mm）で組む。
+     スマホの画面幅に合わせて組ませると商品名の列が潰れて1文字ずつ折り返し、
+     行がどんどん高くなってページ数が膨れ上がるため、幅は固定する。
+     画面が狭いときは JS で全体を縮小して収める（印刷時は等倍に戻す）。 */
+  #sheet { padding: 4px 0 40px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #list { width: 194mm; transform-origin: top left; }
+
   @media print {
     .bar, .notice { display: none !important; }
-    #list { padding: 0; overflow: visible; }
+    #sheet { padding: 0; overflow: visible; }
+    #list { zoom: 1 !important; width: 194mm; }
   }
 </style>
 <style id="listStyle"></style>
@@ -80,7 +95,9 @@
 
 <p class="notice" id="inAppNotice" hidden>
   <b>LINEの中では印刷できません。</b><br>
-  画面右下の「⋯」または「</>」→ <b>「Safariで開く」</b>（Androidは「ブラウザで開く」）を押してから、もう一度このボタンを押してください。
+  下のボタンでブラウザに移ってから印刷してください。<br>
+  <button type="button" id="openBrowserBtn">ブラウザで開く</button><br>
+  <span id="inAppFallback" hidden>開かない場合は、画面右下の「⋯」または「</>」→「Safariで開く」（Androidは「ブラウザで開く」）を使ってください。</span>
 </p>
 
 <p class="notice" id="iosNotice" hidden>
@@ -89,12 +106,13 @@
 
 <p class="notice error" id="errorNotice" hidden></p>
 
-<div id="list"></div>
+<div id="sheet"><div id="list"></div></div>
 
 <script>
 (function () {
   var FALLBACK_SRC = 'https://script.google.com/macros/s/AKfycbyw-qbR5r5fOmayng9kD4RT6yhhTtHf-KHvzpzLxNszCccGe_4enO6DkIy-AxyxKFJr/exec';
 
+  var sheetEl = document.getElementById('sheet');
   var listEl = document.getElementById('list');
   var styleEl = document.getElementById('listStyle');
   var stampEl = document.getElementById('stamp');
@@ -116,6 +134,19 @@
   var isIOS = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document);
   if (isInApp) document.getElementById('inAppNotice').hidden = false;
   else if (isIOS) document.getElementById('iosNotice').hidden = false;
+
+  // LINEなどのアプリ内ブラウザには印刷機能が無い。ここから本物のブラウザへ渡す。
+  // iOSは x-safari- を付けるとSafariが開き、AndroidはintentでChromeが開く。
+  document.getElementById('openBrowserBtn').addEventListener('click', function () {
+    var here = location.href;
+    if (isIOS) {
+      location.href = 'x-safari-' + here;
+    } else {
+      location.href = 'intent://' + here.replace(/^https?:\/\//, '') + '#Intent;scheme=https;end';
+    }
+    // 開けなかったときのために、少し待ってから手動の手順を出す。
+    setTimeout(function () { document.getElementById('inAppFallback').hidden = false; }, 1200);
+  });
 
   function showError(message) {
     errorEl.textContent = message;
@@ -152,6 +183,7 @@
       styleEl.textContent = payload.css || '';
       listEl.innerHTML = payload.body || '';
       stampEl.textContent = payload.generatedAt ? payload.generatedAt + ' 時点' : '';
+      fitToScreen();
       finish('');
     };
 
@@ -160,7 +192,25 @@
     document.body.appendChild(script);
   }
 
+  // 画面が A4 の幅より狭いときは、全体を縮めて横スクロールなしで読めるようにする。
+  // zoom はレイアウトごと縮むので、入れ物の高さも自動で合う（transform だと余白が残る）。
+  function fitToScreen() {
+    listEl.style.zoom = '1';
+    var available = sheetEl.clientWidth;
+    var natural = listEl.scrollWidth;
+    if (!available || !natural) return;
+    listEl.style.zoom = available < natural ? (available / natural) : '1';
+  }
+  window.addEventListener('resize', fitToScreen);
+  // 印刷ダイアログの前後で等倍に戻す（一部のブラウザは表示中の倍率で印刷するため）。
+  window.addEventListener('beforeprint', function () { listEl.style.zoom = '1'; });
+  window.addEventListener('afterprint', fitToScreen);
+
   printBtn.addEventListener('click', function () {
+    if (isInApp) {
+      showError('LINEの中では印刷できません。上の「ブラウザで開く」を押してから印刷してください。');
+      return;
+    }
     if (typeof window.print !== 'function') {
       showError('このブラウザでは印刷できません。Safari または Chrome で開き直してください。');
       return;
