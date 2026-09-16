@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>発送準備リスト（印刷用）</title>
+<style>
+  /* 画面表示まわりだけをここで持つ。表そのもののCSSはApps Script側から受け取って
+     <style id="listStyle"> に流し込むので、印刷レイアウトは1か所で管理できる。 */
+  body {
+    margin: 0;
+    font-family: "Noto Sans JP", "Hiragino Sans", "Yu Gothic", Meiryo, sans-serif;
+    color: #1b2430;
+    background: #ffffff;
+  }
+  .bar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: #ffffff;
+    border-bottom: 1px solid #d8dee6;
+    padding: 10px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .bar button {
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: 1px solid #0f6b5f;
+    background: #0f6b5f;
+    color: #ffffff;
+    cursor: pointer;
+  }
+  .bar button.secondary {
+    background: #ffffff;
+    color: #1b2430;
+    border-color: #c3cbd8;
+    font-weight: 500;
+  }
+  .bar button:disabled { opacity: .5; cursor: default; }
+  .stamp { font-size: 12px; color: #64748b; }
+
+  .notice {
+    margin: 0;
+    padding: 12px 14px;
+    font-size: 14px;
+    line-height: 1.8;
+    background: #fff6e3;
+    border-bottom: 1px solid #e3c98a;
+    color: #6b4708;
+  }
+  .notice b { color: #8a4b00; }
+  .notice.error { background: #fbe7e3; border-bottom-color: #e2b4ac; color: #8c2a20; }
+  .notice[hidden] { display: none; }
+
+  #list { padding: 4px 0 40px; }
+  /* 画面では横にはみ出す表をスクロールできるようにする（印刷時はA4に収まる）。 */
+  @media screen {
+    #list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  }
+  @media print {
+    .bar, .notice { display: none !important; }
+    #list { padding: 0; overflow: visible; }
+  }
+</style>
+<style id="listStyle"></style>
+</head>
+<body>
+
+<div class="bar">
+  <button type="button" id="printBtn">印刷 / PDFで保存</button>
+  <button type="button" class="secondary" id="reloadBtn">最新を読み込む</button>
+  <span class="stamp" id="stamp">読み込み中…</span>
+</div>
+
+<p class="notice" id="inAppNotice" hidden>
+  <b>LINEの中では印刷できません。</b><br>
+  画面右下の「⋯」または「</>」→ <b>「Safariで開く」</b>（Androidは「ブラウザで開く」）を押してから、もう一度このボタンを押してください。
+</p>
+
+<p class="notice" id="iosNotice" hidden>
+  印刷ボタンが反応しないときは、画面下の<b>共有ボタン（□に↑）</b>→ <b>「プリント」</b>から印刷できます。
+</p>
+
+<p class="notice error" id="errorNotice" hidden></p>
+
+<div id="list"></div>
+
+<script>
+(function () {
+  var FALLBACK_SRC = 'https://script.google.com/macros/s/AKfycbyw-qbR5r5fOmayng9kD4RT6yhhTtHf-KHvzpzLxNszCccGe_4enO6DkIy-AxyxKFJr/exec';
+
+  var listEl = document.getElementById('list');
+  var styleEl = document.getElementById('listStyle');
+  var stampEl = document.getElementById('stamp');
+  var errorEl = document.getElementById('errorNotice');
+  var reloadBtn = document.getElementById('reloadBtn');
+  var printBtn = document.getElementById('printBtn');
+
+  // 取得先。LINEのリンクには ?src=<ウェブアプリのURL> が付いてくる。
+  // 別のURLを差し込まれないよう、Apps Script のもの以外は受け付けない。
+  function resolveSrc() {
+    var m = location.search.match(/[?&]src=([^&]+)/);
+    if (!m) return FALLBACK_SRC;
+    var url = decodeURIComponent(m[1]);
+    return /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url) ? url : FALLBACK_SRC;
+  }
+
+  var ua = navigator.userAgent || '';
+  var isInApp = /\bLine\//i.test(ua) || /FBAN|FBAV|Instagram/i.test(ua);
+  var isIOS = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document);
+  if (isInApp) document.getElementById('inAppNotice').hidden = false;
+  else if (isIOS) document.getElementById('iosNotice').hidden = false;
+
+  function showError(message) {
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+  }
+
+  var seq = 0;
+  function load() {
+    errorEl.hidden = true;
+    reloadBtn.disabled = true;
+    stampEl.textContent = '読み込み中…';
+
+    seq += 1;
+    var name = '__pickingCb' + seq;
+    var script = document.createElement('script');
+    var timer = setTimeout(function () { finish('読み込みに時間がかかっています。通信状態を確認して、もう一度お試しください。'); }, 25000);
+
+    function finish(message) {
+      clearTimeout(timer);
+      reloadBtn.disabled = false;
+      try { delete window[name]; } catch (e) { window[name] = undefined; }
+      if (script.parentNode) script.parentNode.removeChild(script);
+      if (message) {
+        stampEl.textContent = '';
+        showError(message);
+      }
+    }
+
+    window[name] = function (payload) {
+      if (!payload || !payload.ok) {
+        finish((payload && payload.message) || 'リストを読み込めませんでした。');
+        return;
+      }
+      styleEl.textContent = payload.css || '';
+      listEl.innerHTML = payload.body || '';
+      stampEl.textContent = payload.generatedAt ? payload.generatedAt + ' 時点' : '';
+      finish('');
+    };
+
+    script.onerror = function () { finish('リストを読み込めませんでした。通信状態を確認してください。'); };
+    script.src = resolveSrc() + '?action=picking_list_json&callback=' + name + '&t=' + Date.now();
+    document.body.appendChild(script);
+  }
+
+  printBtn.addEventListener('click', function () {
+    if (typeof window.print !== 'function') {
+      showError('このブラウザでは印刷できません。Safari または Chrome で開き直してください。');
+      return;
+    }
+    window.print();
+  });
+  reloadBtn.addEventListener('click', load);
+  load();
+})();
+</script>
+
+</body>
+</html>
