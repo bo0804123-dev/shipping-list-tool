@@ -44,6 +44,10 @@ const sheetCsvButton = document.querySelector("#sheetCsvButton");
 const sheetSyncButton = document.querySelector("#sheetSyncButton");
 const baseFetchButton = document.querySelector("#baseFetchButton");
 const shopifyFetchButton = document.querySelector("#shopifyFetchButton");
+const amazonFetchButton = document.querySelector("#amazonFetchButton");
+const amazonFetchPanelButton = document.querySelector("#amazonFetchPanelButton");
+const amazonStartDate = document.querySelector("#amazonStartDate");
+const amazonStatus = document.querySelector("#amazonStatus");
 const historyClearButton = document.querySelector("#historyClearButton");
 const syncResetButton = document.querySelector("#syncResetButton");
 const pasteImportButton = document.querySelector("#pasteImportButton");
@@ -87,6 +91,8 @@ baseFetchButton.addEventListener("click", fetchBaseOrders);
 shopifyFetchButton.addEventListener("click", fetchShopifyOrders);
 baseFetchPanelButton.addEventListener("click", fetchBaseOrders);
 shopifyFetchPanelButton.addEventListener("click", fetchShopifyOrders);
+amazonFetchButton.addEventListener("click", fetchAmazonOrders);
+amazonFetchPanelButton.addEventListener("click", fetchAmazonOrders);
 baseAuthButton.addEventListener("click", openBaseAuth);
 historyClearButton.addEventListener("click", clearSavedHistory);
 syncResetButton.addEventListener("click", resetSyncStatus);
@@ -108,6 +114,8 @@ baseShopKey.addEventListener("change", () => {
 baseStartDate.value = baseStartDate.value || new Date().toISOString().slice(0, 10);
 shopifyStoreDomain.value = localStorage.getItem("shippingToolShopifyStoreDomain") || "";
 shopifyStartDate.value = shopifyStartDate.value || new Date().toISOString().slice(0, 10);
+// Amazonは購入から発送までに日が空くことがあるので、既定は3日前から取得する。
+amazonStartDate.value = amazonStartDate.value || new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 async function handleFiles(event) {
   const files = Array.from(event.target.files || []);
@@ -1069,7 +1077,8 @@ async function syncToGoogleSheets() {
   }
   const targetOrders = filteredOrders().filter((order) => {
     if (order.syncedAt) return false;
-    return syncMode.value === "all" || order.shipTarget;
+    // AmazonのFBA注文などは発送対象ではないが、売上の記録として同期する（recordOnly）。
+    return syncMode.value === "all" || order.shipTarget || order.recordOnly;
   });
   const rows = sheetArchiveObjects(targetOrders);
   if (!rows.length) {
@@ -1363,6 +1372,69 @@ async function fetchShopifyOrders() {
     shopifyStatus.value = `失敗: ${error.message}`;
     setNotice(`Shopify取得失敗: ${error.message}`, "error");
   }
+}
+
+async function fetchAmazonOrders() {
+  const url = getSyncUrl();
+  if (!url) {
+    amazonStatus.value = "Apps Script URLを先に設定してください";
+    setNotice("Apps Script URLを先に設定してください", "error");
+    return;
+  }
+  amazonStatus.value = "取得中...（件数が多いと数分かかります）";
+  setNotice("Amazon注文を取得中...（件数が多いと数分かかります）", "working");
+  try {
+    const result = await postToAppsScript(url, {
+      action: "amazon_orders",
+      created_after: amazonStartDate.value || "",
+    });
+    if (!result.ok) throw new Error(result.error || "Amazon注文取得に失敗しました");
+    const orders = (result.orders || []).map(amazonOrderToOrder);
+    orders.forEach(upsertOrder);
+    state.files.push("Amazon API");
+    saveOrders();
+    const targets = orders.filter((order) => order.shipTarget).length;
+    const records = orders.filter((order) => order.recordOnly).length;
+    amazonStatus.value = `発送対象${targets}件 / 売上記録${records}件（API ${result.total || 0}件）`;
+    setNotice(
+      `Amazon注文を追加しました：発送対象${targets}件・FBAなど売上記録のみ${records}件`
+        + (result.warning ? `／注意：${result.warning}` : ""),
+      result.warning ? "warning" : "success");
+    render();
+  } catch (error) {
+    amazonStatus.value = `失敗: ${error.message}`;
+    setNotice(`Amazon取得失敗: ${error.message}`, "error");
+  }
+}
+
+// Apps Script側で販売データの形に近づけてあるので、ここではツールの項目名に移すだけ。
+function amazonOrderToOrder(amazonOrder) {
+  const status = amazonOrder.status || "未発送";
+  const shipTarget = isShipTarget(status);
+  return {
+    id: crypto.randomUUID(),
+    source: "Amazon",
+    sellerAccount: "Amazon",
+    orderId: amazonOrder.orderId || `AMAZON-${Date.now()}`,
+    orderedAt: amazonOrder.orderedAt || "",
+    status,
+    buyerName: amazonOrder.buyerName || "",
+    postalCode: amazonOrder.postalCode || "",
+    address: amazonOrder.address || "",
+    phone: amazonOrder.phone || "",
+    itemName: amazonOrder.itemName || "",
+    sku: amazonOrder.sku || "",
+    quantity: String(amazonOrder.quantity || 1),
+    shippingMethod: amazonOrder.shippingMethod || "",
+    price: amazonOrder.price !== "" && amazonOrder.price !== undefined ? `¥${amazonOrder.price}` : "",
+    profit: "",
+    accountName: "",
+    syncedAt: "",
+    note: amazonOrder.note || "",
+    shipTarget,
+    // キャンセル以外で発送対象でないもの（FBA・発送済み）は売上の記録として同期する。
+    recordOnly: !shipTarget && status !== "キャンセル",
+  };
 }
 
 function shopifyOrderToOrder(shopifyOrder, domain) {
