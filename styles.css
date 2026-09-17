@@ -50,6 +50,10 @@ body {
   order: 3;
 }
 
+.amazon-panel {
+  order: 3;
+}
+
 .table-panel {
   order: 4;
 }
