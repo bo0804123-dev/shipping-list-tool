@@ -720,10 +720,9 @@ function parseRakumaPastedBlock(lines) {
   const orderId = valueAfter("取引ID", "オーダーID", "注文番号", "商品ID") || `RAKUMA-${Date.now()}`;
   const itemName = parseRakumaItemName(cleaned);
   const deadline = parseRakumaDeadline(cleaned);
-  // ラクマの取引画面には購入日時が出ないことが多い。以前は発送期限から3日引いた日付を
-  // 「推定」として入れていたが、実際の購入日時とずれるうえ検品表にも出てしまうので使わない。
-  // ラベルから取れないときは空欄のままにする。
-  const orderedAt = valueAfter("購入日時", "購入日", "支払い日時", "注文日時");
+  // ラクマの取引画面には購入日時が出ないことが多い。ラベルから取れないときは
+  // 発送期限から3日引いた日付を入れる（「推定」の文字は付けない）。
+  const orderedAt = valueAfter("購入日時", "購入日", "支払い日時", "注文日時") || estimateRakumaOrderedAt(deadline);
   const shippingMethod = valueAfter("配送方法", "配送の方法", "発送方法");
   const price = valueAfter("商品代金", "販売価格", "購入金額", "価格") || parseLabeledAmount(cleaned, "商品代金") || parseFirstRakumaPrice(cleaned);
   const profit = valueAfter("販売利益", "売上金", "受取金額") || parseLabeledAmount(cleaned, "受取代金");
@@ -803,6 +802,14 @@ function parseRakumaDeadline(cleaned) {
   const line = cleaned.find((entry) => entry.startsWith("発送期限"));
   if (!line) return "";
   return line.replace(/^発送期限[:：]?/, "").trim();
+}
+
+function estimateRakumaOrderedAt(deadline) {
+  const match = String(deadline || "").match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if (!match) return "";
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  date.setDate(date.getDate() - 3);
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
 }
 
 function parseRakumaShippingMethod(cleaned) {
