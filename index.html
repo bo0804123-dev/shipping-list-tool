@@ -53,8 +53,8 @@
             <p>各サービスから出力したCSVを追加してください。列名は自動判定し、不足分は空欄で扱います。</p>
           </div>
           <label class="file-picker">
-            CSVを追加
-            <input id="fileInput" type="file" accept=".csv,text/csv" multiple />
+            CSV・Amazonレポートを追加
+            <input id="fileInput" type="file" accept=".csv,text/csv,.txt,.tsv,text/plain,text/tab-separated-values" multiple />
           </label>
         </div>
 
@@ -69,6 +69,7 @@
               <option value="base">BASE</option>
               <option value="shopify">Shopify</option>
               <option value="giftmall">ギフトモール</option>
+              <option value="amazon">Amazon（注文レポート）</option>
               <option value="other">その他</option>
             </select>
           </label>
