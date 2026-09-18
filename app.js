@@ -28,6 +28,7 @@ const sourceNames = {
   base: "BASE",
   shopify: "Shopify",
   giftmall: "ギフトモール",
+  amazon: "Amazon",
   other: "その他",
 };
 
@@ -122,8 +123,19 @@ async function handleFiles(event) {
   if (!files.length) return;
   setNotice(`${files.length}件のCSVを読み込み中です...`, "working");
   let importedCount = 0;
+  let amazonWithoutShipStatus = false;
   for (const file of files) {
     const text = await readCsvText(file);
+    // Amazonの注文レポート（タブ区切りの.txt）は専用に読む。
+    if (sourceSelect.value === "amazon" || isAmazonReport(text)) {
+      const result = amazonReportToOrders(text);
+      result.orders.forEach((order) => {
+        if (!upsertOrder(order)) importedCount += 1;
+      });
+      if (!result.hasShipStatus) amazonWithoutShipStatus = true;
+      state.files.push(file.name);
+      continue;
+    }
     const rows = parseCsv(text);
     const source = sourceSelect.value === "auto" ? inferSource(file.name, rows) : sourceSelect.value;
     const orders = rowsToOrders(rows, source);
@@ -140,8 +152,92 @@ async function handleFiles(event) {
     .reduce((sum, count) => sum + (count - 1), 0);
   setNotice(
     `CSVから${importedCount}件を発送リストへ追加しました`
-      + (duplicateRows ? `／取引IDが重なる行が${duplicateRows}件あります（色付きの行を確認してください）` : ""),
-    duplicateRows ? "warning" : "success");
+      + (duplicateRows ? `／取引IDが重なる行が${duplicateRows}件あります（色付きの行を確認してください）` : "")
+      + (amazonWithoutShipStatus
+        ? "／注意：このAmazonレポートには発送済みかどうかが入っていません。発送済みの注文が混ざっていたら一覧から消してください（セラーセントラルの「未出荷の注文」タブのレポートなら自動で判定できます）"
+        : ""),
+    duplicateRows || amazonWithoutShipStatus ? "warning" : "success");
+}
+
+// Amazonセラーセントラルの注文レポート（先頭行が order-id から始まるタブ区切り）かどうか。
+function isAmazonReport(text) {
+  return /^\uFEFF?order-id\t/.test(String(text || ""));
+}
+
+// Amazonの注文レポートを発送リストの注文に変換する。
+// 1行が「注文の中の1商品」なので、同じ注文番号の行は1件にまとめる。
+// 「未出荷の注文」レポートなら quantity-to-ship（未発送の数）があり、発送済みかどうかを判定できる。
+function amazonReportToOrders(text) {
+  const lines = String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim() !== "");
+  if (lines.length < 2) return { orders: [], hasShipStatus: false };
+  const headers = lines[0].split("\t").map((header) => header.trim().toLowerCase());
+  const hasShipStatus = headers.includes("quantity-to-ship");
+  const byId = new Map();
+  lines.slice(1).forEach((line) => {
+    const cells = line.split("\t");
+    const get = (name) => {
+      const index = headers.indexOf(name);
+      return index >= 0 ? String(cells[index] || "").trim() : "";
+    };
+    const orderId = get("order-id");
+    if (!orderId) return;
+    const quantity = Number(get("quantity-purchased")) || 1;
+    const toShip = hasShipStatus ? Number(get("quantity-to-ship")) || 0 : quantity;
+    const amount = (Number(get("item-price")) || 0) + (Number(get("shipping-price")) || 0);
+    let order = byId.get(orderId);
+    if (!order) {
+      order = {
+        id: crypto.randomUUID(),
+        source: "Amazon",
+        sellerAccount: "Amazon",
+        orderId,
+        orderedAt: formatAmazonReportDate(get("purchase-date")),
+        status: "未発送",
+        buyerName: get("recipient-name") || get("buyer-name"),
+        postalCode: get("ship-postal-code"),
+        address: [get("ship-state"), get("ship-city"), get("ship-address-1"), get("ship-address-2"), get("ship-address-3")]
+          .filter(Boolean)
+          .join(" "),
+        phone: get("ship-phone-number") || get("buyer-phone-number"),
+        itemName: "",
+        sku: "",
+        quantity: "0",
+        shippingMethod: get("ship-service-level"),
+        price: "",
+        profit: "",
+        accountName: "",
+        syncedAt: "",
+        note: get("delivery-instructions"),
+        amount: 0,
+        toShip: 0,
+      };
+      byId.set(orderId, order);
+    }
+    order.itemName = [order.itemName, get("product-name")].filter(Boolean).join(" / ");
+    order.sku = [order.sku, get("sku")].filter(Boolean).join(" / ");
+    order.quantity = String(Number(order.quantity) + quantity);
+    order.amount += amount;
+    order.toShip += toShip;
+  });
+  const orders = Array.from(byId.values()).map((order) => {
+    const { amount, toShip, ...rest } = order;
+    rest.price = amount ? `¥${Math.round(amount)}` : "";
+    rest.status = toShip > 0 ? "未発送" : "発送完了";
+    rest.shipTarget = isShipTarget(rest.status);
+    // 発送済みの注文も売上の記録として同期できるようにしておく。
+    rest.recordOnly = !rest.shipTarget;
+    return rest;
+  });
+  return { orders, hasShipStatus };
+}
+
+// 「2026-09-16T10:03:21+00:00」→ 日本時間の「2026/09/16 19:03」
+function formatAmazonReportDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${jst.getUTCFullYear()}/${pad(jst.getUTCMonth() + 1)}/${pad(jst.getUTCDate())} ${pad(jst.getUTCHours())}:${pad(jst.getUTCMinutes())}`;
 }
 
 async function readCsvText(file) {
