@@ -112,7 +112,8 @@ baseShopKey.addEventListener("change", () => {
   localStorage.setItem("shippingToolBaseShopKey", baseShopKey.value);
   baseShopUrl.value = baseShopKey.value === "iglight" ? "https://iglight.base.shop/" : "https://ilt.base.ec/";
 });
-baseStartDate.value = baseStartDate.value || new Date().toISOString().slice(0, 10);
+// 取得開始日の既定は30日前。今日にすると、数日前に入った未発送の注文が取れない
+baseStartDate.value = baseStartDate.value || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 shopifyStoreDomain.value = localStorage.getItem("shippingToolShopifyStoreDomain") || "";
 shopifyStartDate.value = shopifyStartDate.value || new Date().toISOString().slice(0, 10);
 // Amazonは購入から発送までに日が空くことがあるので、既定は3日前から取得する。
