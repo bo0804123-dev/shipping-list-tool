@@ -439,10 +439,103 @@ function splitPastedBlocks(text, source) {
     }
     return [text.trim()].filter(Boolean);
   }
+  if (source === "Amazon") {
+    // セラーセントラルの注文詳細は空行が多いので、注文番号（250-1234567-1234567 形式）を区切りに使う
+    const idPattern = /注文番号\s*[:：]?\s*#?\s*\d{3}-\d{7}-\d{7}/g;
+    const starts = [];
+    let match;
+    while ((match = idPattern.exec(text)) !== null) starts.push(match.index);
+    if (starts.length > 1) {
+      return starts.map((start, index) => text.slice(start, starts[index + 1] || text.length).trim()).filter(Boolean);
+    }
+    return [text.trim()].filter(Boolean);
+  }
   return text
     .split(/\n\s*\n+/)
     .map((block) => block.trim())
     .filter(Boolean);
+}
+
+// Amazonセラーセントラルの「注文の詳細」画面をコピーした文字列を読む。
+function parseAmazonPastedBlock(lines) {
+  const cleaned = lines
+    .map((line) => line.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/\t+/g, " ").trim())
+    .filter(Boolean);
+  const joined = cleaned.join("\n");
+  const first = (pattern) => {
+    const match = joined.match(pattern);
+    return match ? String(match[1]).trim() : "";
+  };
+
+  const orderId = first(/注文番号\s*[:：]?\s*#?\s*(\d{3}-\d{7}-\d{7})/);
+  // 「2026年9月29日(火) 13:25 JST」→「2026年9月29日 13:25」
+  const tidyDate = (value) => String(value || "").replace(/\([^)]*\)/g, " ").replace(/JST/gi, "").replace(/\s+/g, " ").trim();
+  const orderedAt = tidyDate(first(/購入日\s*[:：]\s*([^\n]+)/));
+  const shipByDate = tidyDate(first(/出荷予定日\s*[:：]\s*([^\n]+)/));
+  const sku = first(/SKU\s*[:：]\s*([^\s]+)/);
+  const asin = first(/ASIN\s*[:：]\s*([A-Z0-9]+)/);
+
+  // 商品名は「ASIN:」の1つ前の行。ステータスや表の見出し行は飛ばす。
+  let itemName = "";
+  const asinIndex = cleaned.findIndex((line) => /^ASIN\s*[:：]/.test(line));
+  if (asinIndex > 0) {
+    for (let i = asinIndex - 1; i >= 0 && i >= asinIndex - 5; i -= 1) {
+      const candidate = cleaned[i];
+      if (!candidate) continue;
+      if (/^(未出荷|出荷済|キャンセル|画像|ステータス|製品名|詳細情報|数量|単価|売上高|配送ラベルの購入|出荷通知を送信|（税抜き）|（税込み）)/.test(candidate)) continue;
+      itemName = candidate;
+      break;
+    }
+  }
+
+  // 「1 ￥5,000 ￥5,500」の行から数量。金額は税込みの合計を優先する。
+  const quantityLine = cleaned.find((line) => /^\d+\s+[¥￥]/.test(line));
+  const quantity = quantityLine ? (quantityLine.match(/^(\d+)/) || [])[1] : "";
+  const totalRaw = first(/商品別の合計\s*[:：]\s*[¥￥]([\d,]+)/)
+    || first(/商品の小計\s*[:：]\s*[¥￥]([\d,]+)/)
+    || (quantityLine ? ((quantityLine.match(/[¥￥]([\d,]+)\s*$/) || quantityLine.match(/[¥￥]([\d,]+)/) || [])[1] || "") : "");
+  const price = totalRaw ? "¥" + totalRaw : "";
+
+  // お届け先：郵便番号の次の行から、宛名の手前までが住所
+  const postalIndex = cleaned.findIndex((line) => /^\d{3}-\d{4}$/.test(line));
+  const postalCode = postalIndex >= 0 ? cleaned[postalIndex] : first(/(\d{3}-\d{4})/);
+  const buyerName = first(/購入者に連絡\s*[:：]\s*([^\n]+)/);
+  let address = "";
+  if (postalIndex >= 0) {
+    const parts = [];
+    for (let i = postalIndex + 1; i < cleaned.length; i += 1) {
+      const line = cleaned[i];
+      if (/^(購入者に連絡|電話|注文の内容|配送ラベルの購入)/.test(line)) break;
+      if (buyerName && line === buyerName) continue; // 住所の最後に入る宛名は住所に混ぜない
+      parts.push(line);
+      if (parts.length >= 4) break;
+    }
+    address = parts.join(" ");
+  }
+
+  const statusRaw = cleaned.find((line) => /^(未出荷|出荷済み?|キャンセル)/.test(line)) || "";
+  const status = /未出荷/.test(statusRaw) ? "未発送"
+    : (/出荷済/.test(statusRaw) ? "発送完了" : (/キャンセル/.test(statusRaw) ? "キャンセル" : ""));
+
+  const shippingService = first(/配送サービス\s*[:：]\s*([^\n]+)/);
+  const fulfillment = first(/フルフィルメント\s*[:：]\s*([^\n]+)/);
+
+  return {
+    orderId,
+    orderedAt,
+    status,
+    buyerName,
+    postalCode,
+    address,
+    // 電話番号は「電話: 07044191913」の形。ハイフン無しでもそのまま入れる。
+    phone: first(/電話\s*[:：]\s*([\d+\-()]+)/),
+    itemName,
+    sku: sku || asin,
+    quantity,
+    shippingMethod: [shippingService, fulfillment ? "フルフィルメント: " + fulfillment : ""].filter(Boolean).join(" / "),
+    price,
+    note: shipByDate ? "出荷予定日 " + shipByDate : "",
+  };
 }
 
 function pastedBlockToOrder(block, index) {
@@ -459,27 +552,28 @@ function pastedBlockToOrder(block, index) {
   const mercari = parseMercariPastedBlock(lines);
   const rakuma = pasteSource.value === "ラクマ" ? parseRakumaPastedBlock(lines) : {};
   const yahoo = pasteSource.value === "ヤフオク" ? parseYahooPastedBlock(lines) : {};
+  const amazon = pasteSource.value === "Amazon" ? parseAmazonPastedBlock(lines) : {};
 
   const order = {
     id: crypto.randomUUID(),
     source: pasteSource.value,
     sellerAccount: sellerAccountSelect.value || "",
-    orderId: get("注文番号", "取引ID", "取引番号", "落札ID") || yahoo.orderId || rakuma.orderId || mercari.orderId || `${pasteSource.value}-${Date.now()}-${index + 1}`,
-    orderedAt: get("購入日", "注文日", "落札日") || yahoo.orderedAt || rakuma.orderedAt || mercari.orderedAt,
-    status: get("ステータス", "取引状態", "発送状況") || yahoo.status || rakuma.status || mercari.status || "未発送",
-    buyerName: yahoo.buyerName || rakuma.buyerName || get("氏名", "購入者", "宛名", "お届け先氏名") || mercari.buyerName,
-    postalCode: get("郵便番号") || yahoo.postalCode || rakuma.postalCode || mercari.postalCode,
-    address: yahoo.address || rakuma.address || get("住所", "配送先住所", "お届け先住所") || mercari.address,
-    phone: get("電話番号"),
-    itemName: get("商品名", "品名", "タイトル") || yahoo.itemName || rakuma.itemName || mercari.itemName,
-    sku: get("SKU", "商品コード", "管理番号"),
-    quantity: normalizeQuantityText(get("数量", "個数") || yahoo.quantity || "1"),
-    shippingMethod: get("配送方法", "発送方法") || yahoo.shippingMethod || rakuma.shippingMethod || mercari.shippingMethod,
-    price: yahoo.price || rakuma.price || mercari.price,
+    orderId: amazon.orderId || get("注文番号", "取引ID", "取引番号", "落札ID") || yahoo.orderId || rakuma.orderId || mercari.orderId || `${pasteSource.value}-${Date.now()}-${index + 1}`,
+    orderedAt: amazon.orderedAt || get("購入日", "注文日", "落札日") || yahoo.orderedAt || rakuma.orderedAt || mercari.orderedAt,
+    status: amazon.status || get("ステータス", "取引状態", "発送状況") || yahoo.status || rakuma.status || mercari.status || "未発送",
+    buyerName: amazon.buyerName || yahoo.buyerName || rakuma.buyerName || get("氏名", "購入者", "宛名", "お届け先氏名") || mercari.buyerName,
+    postalCode: amazon.postalCode || get("郵便番号") || yahoo.postalCode || rakuma.postalCode || mercari.postalCode,
+    address: amazon.address || yahoo.address || rakuma.address || get("住所", "配送先住所", "お届け先住所") || mercari.address,
+    phone: amazon.phone || get("電話番号", "電話"),
+    itemName: amazon.itemName || get("商品名", "品名", "タイトル") || yahoo.itemName || rakuma.itemName || mercari.itemName,
+    sku: amazon.sku || get("SKU", "商品コード", "管理番号"),
+    quantity: normalizeQuantityText(amazon.quantity || get("数量", "個数") || yahoo.quantity || "1"),
+    shippingMethod: amazon.shippingMethod || get("配送方法", "発送方法") || yahoo.shippingMethod || rakuma.shippingMethod || mercari.shippingMethod,
+    price: amazon.price || yahoo.price || rakuma.price || mercari.price,
     profit: rakuma.profit || mercari.profit,
     accountName: rakuma.accountName || mercari.accountName,
     syncedAt: "",
-    note: get("備考", "メモ", "要望", "オプション") || yahoo.note || rakuma.note || mercari.note,
+    note: [amazon.note, get("備考", "メモ", "要望", "オプション")].filter(Boolean).join(" / ") || yahoo.note || rakuma.note || mercari.note,
   };
   order.shipTarget = isShipTarget(order.status);
   return order;
